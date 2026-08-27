@@ -43,6 +43,44 @@
           <template v-else>
             <p class="ma-5 mb-0">お申し込み完了まで約1分！下記の必要事項をご記入下さい。</p>
 
+            <div v-if="assessId" class="mx-5 mt-5">
+              <v-progress-linear v-if="isLoadingAssessment" indeterminate></v-progress-linear>
+
+              <v-alert v-else-if="assessmentError" type="error" text dense class="mb-0">
+                {{ assessmentError }}
+              </v-alert>
+
+              <v-card v-else-if="application" outlined>
+                <v-card-title class="text-subtitle-1">査定内容のご確認</v-card-title>
+
+                <v-divider></v-divider>
+
+                <div v-for="(item, i) in assessmentItems" :key="i" class="d-flex px-4 py-2">
+                  <div class="flex-grow-1 pr-2">
+                    <div class="text-body-2">{{ item.product_name }}</div>
+                    <div class="text-caption grey--text text--darken-1">
+                      {{ item.platform }} / {{ conditionLabel(item.condition) }}
+                    </div>
+                  </div>
+                  <div class="text-right text-no-wrap text-body-2">
+                    {{ formatPrice(item.estimated_price) }}円 &times; {{ item.quantity }}
+                  </div>
+                </div>
+
+                <v-divider></v-divider>
+
+                <v-card-text class="py-3">
+                  <div class="d-flex justify-space-between text-subtitle-1">
+                    <span>合計査定額</span>
+                    <strong>{{ formatPrice(application.total_estimated_price) }}円</strong>
+                  </div>
+                  <div class="text-caption grey--text text--darken-1 mt-2">
+                    申込ID: {{ application.assessment_id }}
+                  </div>
+                </v-card-text>
+              </v-card>
+            </div>
+
             <v-form ref="form" class="pa-5">
 
               <template v-for="v in input.pickups">
@@ -117,11 +155,12 @@
             </v-radio-group>
 -->
 
-              <v-textarea v-model="input.comment" label="備考" placeholder="自動査定のIDがあれば記入してください" auto-grow></v-textarea>
+              <v-textarea v-model="input.comment" label="備考"
+                :placeholder="application ? 'ご要望があれば記入してください' : '自動査定のIDがあれば記入してください'" auto-grow></v-textarea>
 
               <v-divider class="my-4"></v-divider>
 
-              <v-btn depressed color="primary" x-large block :loading="isSending" @click="send">
+              <v-btn depressed color="primary" x-large block :loading="isSending" :disabled="!canSubmit" @click="send">
                 <v-icon left>mdi-send</v-icon>
                 申し込む
               </v-btn>
@@ -137,6 +176,12 @@
   <script>
     //NOVASTOから発行されたAPIキーを設置　このキーを基にReCOREのどのカンパニー・店舗に依頼が飛ぶか判定される
     const identification = 'rc_NAMHZcittOpOXQ5Jg0acD7rfhkBFSV8GfoBARqPAdFc'
+
+    // LINE買取チャットボットの査定内容取得API
+    const FORM_API_BASE = 'https://line-app.game-kaitorilab.jp'
+
+    // チャットボットの情報取得専用API
+    const FORM_READ_API_KEY = 'L6cWVbEwTEkyutme3RRlcqIW1ljiuuHd7cFba7yYCJQ'
   </script>
 
   <script src="https://cdn.jsdelivr.net/npm/vue@2.x/dist/vue.min.js"></script>
@@ -153,6 +198,11 @@
         return {
           isSending: false,
           isDone: false,
+
+          assessId: null,
+          application: null,
+          isLoadingAssessment: false,
+          assessmentError: null,
 
           input: {
             is_pickup: false, // ヤマト自動集荷を行う場合はtrue 行わない場合はfalse
@@ -236,6 +286,14 @@
             { value: '002', text: 'クッション袋A3(002)' },
           ],
 
+          // プライスターCSV出品フォーマット準拠（0=買取不可はAPI側で除外済み）
+          conditionLabels: {
+            1: 'ほぼ新品',
+            2: '非常に良い',
+            3: '良い',
+            4: '可',
+          },
+
           prefectures: [
             '北海道',
             '青森県',
@@ -288,7 +346,21 @@
         }
       },
 
+      computed: {
+        assessmentItems() {
+          return this.application ? this.application.items : []
+        },
+
+        // 査定情報の取得に失敗した状態で申し込ませない
+        canSubmit() {
+          return !this.assessId || (!!this.application && !this.assessmentError)
+        },
+      },
+
       async created() {
+        // 会員情報の取得を待たせないよう、査定内容の取得は並行して進める
+        this.loadAssessment()
+
         // <MEMBER_APP_URL>にLINEミニアプリのWebアプリURL挿入
         recore.member.init({
           origin: 'https://ossb.app.recore-member.com'
@@ -312,6 +384,77 @@
       },
 
       methods: {
+        // LINEから遷移した場合のみ、申込IDに紐づく査定商品を取得する
+        async loadAssessment() {
+          const assessId = new URLSearchParams(window.location.search).get('assess_id')
+          if (!assessId) {
+            return
+          }
+
+          this.assessId = assessId
+
+          if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(assessId)) {
+            this.assessmentError = '申込IDの形式が正しくありません。LINEのメッセージから再度お進みください。'
+            return
+          }
+
+          this.isLoadingAssessment = true
+
+          const { data, status } = await axios.request(`${FORM_API_BASE}/api/v1/form/applications/${assessId}`, {
+            method: 'get',
+            headers: {
+              'X-API-Key': FORM_READ_API_KEY,
+            }
+          }).catch(e => e.response || {})
+
+          this.isLoadingAssessment = false
+
+          if (!String(status).startsWith('2')) {
+            this.assessmentError = status === 404
+              ? 'お申し込み内容が見つかりませんでした。LINEのメッセージから再度お進みください。'
+              : '査定内容を取得できませんでした。時間をおいて再度お試しください。'
+            return
+          }
+
+          if (!(data && Array.isArray(data.items) && data.items.length > 0)) {
+            this.assessmentError = '買取対象の商品がありません。LINEで査定をやり直してください。'
+            return
+          }
+
+          this.application = data
+          this.assessmentError = null
+        },
+
+        conditionLabel(condition) {
+          return this.conditionLabels[condition] || `コンディション${condition}`
+        },
+
+        formatPrice(price) {
+          return Number(price).toLocaleString()
+        },
+
+        // ReCORE側に商品明細を残すため、備考へ申込IDと査定内容を追記する
+        buildComment() {
+          if (!this.application) {
+            return this.input.comment
+          }
+
+          const lines = [
+            `【自動査定ID】${this.application.assessment_id}`,
+            `【合計査定額】${this.formatPrice(this.application.total_estimated_price)}円`,
+            '【商品】',
+            ...this.assessmentItems.map(item => (
+              `- ${item.product_name} / ASIN:${item.asin} / ${this.conditionLabel(item.condition)} / ${this.formatPrice(item.estimated_price)}円 x${item.quantity}`
+            )),
+          ]
+
+          if (this.input.comment) {
+            lines.push('', this.input.comment)
+          }
+
+          return lines.join('\n')
+        },
+
         async autocompleteAddress() {
           const code = String(this.input.postal_code).replace(/-/g, '')
           if (!/^[0-9]{7}$/.test(code)) {
@@ -336,6 +479,10 @@
         },
 
         async send() {
+          if (!this.canSubmit) {
+            return
+          }
+
           if (!this.$refs.form.validate()) {
             window.scroll({ top: 0, behavior: 'smooth' })
             return
@@ -352,7 +499,7 @@
             headers: {
               'X-Identification': identification,
             },
-            data: this.input
+            data: Object.assign({}, this.input, { comment: this.buildComment() })
           }).catch(e => e.response || {})
 
           this.isSending = false
