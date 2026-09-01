@@ -318,6 +318,15 @@
             4: '可',
           },
 
+          // Amazonコンディション → ReCORE内コンディションの対応
+          // 新品→新品 / ほぼ新品→未使用 / 非常に良い→中古A / 良い→中古B / 可→中古C / ジャンク→中古D
+          recoreConditionLabels: {
+            1: '未使用',
+            2: '中古A',
+            3: '中古B',
+            4: '中古C',
+          },
+
           prefectures: [
             '北海道',
             '青森県',
@@ -477,6 +486,13 @@
           return this.conditionLabels[condition] || `コンディション${condition}`
         },
 
+        // ReCORE担当者が判別できるよう、Amazonコンディションに対応表を併記する
+        conditionLabelWithRecore(condition) {
+          const recoreLabel = this.recoreConditionLabels[condition]
+          const label = this.conditionLabel(condition)
+          return recoreLabel ? `${label}（${recoreLabel}）` : label
+        },
+
         formatPrice(price) {
           return Number(price).toLocaleString()
         },
@@ -491,9 +507,14 @@
             `【申込ID】${this.application.assessment_id}`,
             `【合計金額】${this.formatPrice(this.application.total_estimated_price)}円`,
             '【商品】',
-            ...this.assessmentItems.map(item => (
-              `[${item.asin}, ${item.product_name}, ${this.conditionLabel(item.condition)}, ${item.quantity}, ${this.formatPrice(item.estimated_price)}円]`
-            )),
+            ...this.assessmentItems.map(item => [
+              `- ${item.product_name}`,
+              `asin：${item.asin}`,
+              `コンディション：${this.conditionLabelWithRecore(item.condition)}`,
+              `個数：${item.quantity}`,
+              `買取額：${this.formatPrice(item.estimated_price)}円`,
+              `売価：${item.selling_price ? this.formatPrice(item.selling_price) + '円' : '-'}`,
+            ].join(', ')),
             ASSESSMENT_PRICE_NOTICE,
           ]
 
