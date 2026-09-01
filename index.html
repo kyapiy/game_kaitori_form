@@ -194,6 +194,9 @@
 
     // 入力途中での無駄なAPI呼び出しを避けるための待機時間
     const ASSESS_ID_INPUT_DEBOUNCE_MS = 300
+
+    // 備考へ転記する査定額の注意書き
+    const ASSESSMENT_PRICE_NOTICE = '※買取価格は時価。売価が変われば査定値も変わるので再度査定しなおして下さい。'
   </script>
 
   <script src="https://cdn.jsdelivr.net/npm/vue@2.x/dist/vue.min.js"></script>
@@ -478,23 +481,24 @@
           return Number(price).toLocaleString()
         },
 
-        // ReCORE側に商品明細を残すため、備考へ申込IDと査定内容を追記する
+        // ReCORE側に商品明細を残すため、備考の先頭へ申込IDと査定内容を付与する
         buildComment() {
           if (!this.application) {
             return this.input.comment
           }
 
           const lines = [
-            `【自動査定ID】${this.application.assessment_id}`,
-            `【合計査定額】${this.formatPrice(this.application.total_estimated_price)}円`,
+            `【申込ID】${this.application.assessment_id}`,
+            `【合計金額】${this.formatPrice(this.application.total_estimated_price)}円`,
             '【商品】',
             ...this.assessmentItems.map(item => (
-              `- ${item.product_name} / ASIN:${item.asin} / ${this.conditionLabel(item.condition)} / ${this.formatPrice(item.estimated_price)}円 x${item.quantity}`
+              `[${item.asin}, ${item.product_name}, ${this.conditionLabel(item.condition)}, ${item.quantity}, ${this.formatPrice(item.estimated_price)}円]`
             )),
+            ASSESSMENT_PRICE_NOTICE,
           ]
 
           if (this.input.comment) {
-            lines.push('', this.input.comment)
+            lines.push('【備考】', this.input.comment)
           }
 
           return lines.join('\n')
