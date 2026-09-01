@@ -43,45 +43,51 @@
           <template v-else>
             <p class="ma-5 mb-0">お申し込み完了まで約1分！下記の必要事項をご記入下さい。</p>
 
-            <div v-if="assessId" class="mx-5 mt-5">
-              <v-progress-linear v-if="isLoadingAssessment" indeterminate></v-progress-linear>
+            <v-form ref="form" class="pa-5">
 
-              <v-alert v-else-if="assessmentError" type="error" text dense class="mb-0">
-                {{ assessmentError }}
-              </v-alert>
+              <!-- 申込IDは入力完了をトリガーに査定内容を取得する（LINE経由のみ必須） -->
+              <v-text-field v-model="assessId" :rules="rule.assess_id"
+                :label="isLineEmbedded ? '申込ID' : '申込ID（任意）'"
+                :placeholder="isLineEmbedded ? 'LINEで案内された申込IDを入力' : '自動査定のIDがあれば入力'" counter="26"
+                @input="onAssessIdInput"></v-text-field>
 
-              <v-card v-else-if="application" outlined>
-                <v-card-title class="text-subtitle-1">査定内容のご確認</v-card-title>
+              <div v-if="isLoadingAssessment || assessmentError || application" class="mb-6">
+                <v-progress-linear v-if="isLoadingAssessment" indeterminate></v-progress-linear>
 
-                <v-divider></v-divider>
+                <v-alert v-else-if="assessmentError" type="error" text dense class="mb-0">
+                  {{ assessmentError }}
+                </v-alert>
 
-                <div v-for="(item, i) in assessmentItems" :key="i" class="d-flex px-4 py-2">
-                  <div class="flex-grow-1 pr-2">
-                    <div class="text-body-2">{{ item.product_name }}</div>
-                    <div class="text-caption grey--text text--darken-1">
-                      {{ item.platform }} / {{ conditionLabel(item.condition) }}
+                <v-card v-else-if="application" outlined>
+                  <v-card-title class="text-subtitle-1">査定内容のご確認</v-card-title>
+
+                  <v-divider></v-divider>
+
+                  <div v-for="(item, i) in assessmentItems" :key="i" class="d-flex px-4 py-2">
+                    <div class="flex-grow-1 pr-2">
+                      <div class="text-body-2">{{ item.product_name }}</div>
+                      <div class="text-caption grey--text text--darken-1">
+                        {{ item.platform }} / {{ conditionLabel(item.condition) }}
+                      </div>
+                    </div>
+                    <div class="text-right text-no-wrap text-body-2">
+                      {{ formatPrice(item.estimated_price) }}円 &times; {{ item.quantity }}
                     </div>
                   </div>
-                  <div class="text-right text-no-wrap text-body-2">
-                    {{ formatPrice(item.estimated_price) }}円 &times; {{ item.quantity }}
-                  </div>
-                </div>
 
-                <v-divider></v-divider>
+                  <v-divider></v-divider>
 
-                <v-card-text class="py-3">
-                  <div class="d-flex justify-space-between text-subtitle-1">
-                    <span>合計査定額</span>
-                    <strong>{{ formatPrice(application.total_estimated_price) }}円</strong>
-                  </div>
-                  <div class="text-caption grey--text text--darken-1 mt-2">
-                    申込ID: {{ application.assessment_id }}
-                  </div>
-                </v-card-text>
-              </v-card>
-            </div>
-
-            <v-form ref="form" class="pa-5">
+                  <v-card-text class="py-3">
+                    <div class="d-flex justify-space-between text-subtitle-1">
+                      <span>合計査定額</span>
+                      <strong>{{ formatPrice(application.total_estimated_price) }}円</strong>
+                    </div>
+                    <div class="text-caption grey--text text--darken-1 mt-2">
+                      申込ID: {{ application.assessment_id }}
+                    </div>
+                  </v-card-text>
+                </v-card>
+              </div>
 
               <template v-for="v in input.pickups">
                 <v-text-field v-model="v.pickup_date" :rules="rule.pickup_date" label="発送予定日" type="date"
@@ -155,8 +161,8 @@
             </v-radio-group>
 -->
 
-              <v-textarea v-model="input.comment" label="備考"
-                :placeholder="application ? 'ご要望があれば記入してください' : '自動査定のIDがあれば記入してください'" auto-grow></v-textarea>
+              <v-textarea v-model="input.comment" label="備考" placeholder="ご要望があれば記入してください"
+                auto-grow></v-textarea>
 
               <v-divider class="my-4"></v-divider>
 
@@ -182,6 +188,12 @@
 
     // チャットボットの情報取得専用API
     const FORM_READ_API_KEY = 'L6cWVbEwTEkyutme3RRlcqIW1ljiuuHd7cFba7yYCJQ'
+
+    // 申込ID（ULID: Crockford Base32の26文字）
+    const ASSESS_ID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/
+
+    // 入力途中での無駄なAPI呼び出しを避けるための待機時間
+    const ASSESS_ID_INPUT_DEBOUNCE_MS = 300
   </script>
 
   <script src="https://cdn.jsdelivr.net/npm/vue@2.x/dist/vue.min.js"></script>
@@ -203,6 +215,9 @@
           application: null,
           isLoadingAssessment: false,
           assessmentError: null,
+          // LINEミニアプリ経由（iframe埋め込み）かどうか
+          isLineEmbedded: false,
+          assessIdInputTimer: null,
 
           input: {
             is_pickup: false, // ヤマト自動集荷を行う場合はtrue 行わない場合はfalse
@@ -229,6 +244,12 @@
           },
 
           rule: {
+            // LINE経由は必須、それ以外は任意。入力があれば形式のみ検証する
+            assess_id: [
+              v => !this.isLineEmbedded || !!v || '申込IDを入力してください',
+              v => !v || ASSESS_ID_PATTERN.test(String(v).trim())
+                || '申込IDの形式が正しくありません。LINEのメッセージからコピーして入力してください',
+            ],
             pickup_date: [
               v => !this.input.is_pickup || !!v || '集荷希望日を入力してください',
             ],
@@ -353,20 +374,29 @@
 
         // 査定情報の取得に失敗した状態で申し込ませない
         canSubmit() {
-          return !this.assessId || (!!this.application && !this.assessmentError)
+          if (this.isLoadingAssessment) {
+            return false
+          }
+
+          // 直接アクセスは申込IDなしでも申し込める
+          if (!this.isLineEmbedded && !this.assessId) {
+            return true
+          }
+
+          return !!this.application && !this.assessmentError
         },
       },
 
       async created() {
-        // 会員情報の取得を待たせないよう、査定内容の取得は並行して進める
-        this.loadAssessment()
-
         // <MEMBER_APP_URL>にLINEミニアプリのWebアプリURL挿入
         recore.member.init({
           origin: 'https://ossb.app.recore-member.com'
         })
 
-        if (recore.member.embedded()) {
+        // ミニアプリ経由のみ申込IDを必須にするため、経路を記録する
+        this.isLineEmbedded = recore.member.embedded()
+
+        if (this.isLineEmbedded) {
           const member = await recore.member.message('member')
 
           this.input.last_name = member.last_name
@@ -384,17 +414,27 @@
       },
 
       methods: {
-        // LINEから遷移した場合のみ、申込IDに紐づく査定商品を取得する
-        async loadAssessment() {
-          const assessId = new URLSearchParams(window.location.search).get('assess_id')
-          if (!assessId) {
+        // 申込IDの入力をトリガーに査定内容を取得する
+        onAssessIdInput() {
+          this.application = null
+          this.assessmentError = null
+
+          clearTimeout(this.assessIdInputTimer)
+
+          const assessId = String(this.assessId || '').trim()
+          if (!ASSESS_ID_PATTERN.test(assessId)) {
             return
           }
 
-          this.assessId = assessId
+          this.assessIdInputTimer = setTimeout(
+            () => this.loadAssessment(), ASSESS_ID_INPUT_DEBOUNCE_MS
+          )
+        },
 
-          if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(assessId)) {
-            this.assessmentError = '申込IDの形式が正しくありません。LINEのメッセージから再度お進みください。'
+        // 入力された申込IDに紐づく査定商品を取得する
+        async loadAssessment() {
+          const assessId = String(this.assessId || '').trim()
+          if (!ASSESS_ID_PATTERN.test(assessId)) {
             return
           }
 
@@ -409,9 +449,14 @@
 
           this.isLoadingAssessment = false
 
+          // 取得中に入力が変わった場合は、古いレスポンスを反映しない
+          if (String(this.assessId || '').trim() !== assessId) {
+            return
+          }
+
           if (!String(status).startsWith('2')) {
             this.assessmentError = status === 404
-              ? 'お申し込み内容が見つかりませんでした。LINEのメッセージから再度お進みください。'
+              ? 'お申し込み内容が見つかりませんでした。LINEのメッセージから申込IDをコピーして入力してください。'
               : '査定内容を取得できませんでした。時間をおいて再度お試しください。'
             return
           }
@@ -490,7 +535,7 @@
 
           this.isSending = true
 
-          if (recore.member.embedded()) {
+          if (this.isLineEmbedded) {
             this.input.member_jwt = await recore.member.message('jwt')
           }
 
